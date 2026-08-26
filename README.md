@@ -49,10 +49,12 @@ python cname_check.py hostnames.txt
 ~~~
 
 ### 7. MSL4 Bulk Stream Deletion Tool (`delete_msl_configs.py`)
-* **Description**: Automates bulk deletion of MSL4 stream configurations via `/config-media-live/v2/msl-origin/streams/{stream_id}` from a CSV input file[cite: 7]. Includes built-in handling for HTTP 429 rate limits and generates a full JSON execution audit log[cite: 7].
+* **Description**: Automates bulk deletion of MSL4 stream configurations via `/config-media-live/v2/msl-origin/streams/{stream_id}` using an input text file containing Stream IDs (one per line). 
+The script automatically strips whitespace and removes duplicate Stream IDs before processing. 
+Includes built-in handling for HTTP 429 rate limits and generates a detailed timestamped JSON audit log.
 * **Usage**:
 ~~~bash
-python delete_msl_configs.py msl_streams.csv F-AC-123456
+python delete_msl_configs.py msl_streams.txt F-AC-123456
 ~~~
 
 ### 8. DigiCert CNAME Extractor (`extractdigicertcnames.py`)
