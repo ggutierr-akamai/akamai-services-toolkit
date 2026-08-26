@@ -1,4 +1,3 @@
-import csv
 import sys
 import os
 import json
@@ -11,14 +10,14 @@ from urllib.parse import urljoin
 # 1. Argument and Input Verification
 if len(sys.argv) < 3:
     print("Error: Missing required arguments.")
-    print("Usage: python delete_msl_configs.py <path_to_csv_file> <account_switch_key>")
+    print("Usage: python delete_msl_configs.py <path_to_txt_file> <account_switch_key>")
     sys.exit(1)
 
-csv_file_path = sys.argv[1]
+txt_file_path = sys.argv[1]
 account_switch_key = sys.argv[2]
 
-if not os.path.exists(csv_file_path):
-    print(f"Error: File '{csv_file_path}' not found.")
+if not os.path.exists(txt_file_path):
+    print(f"Error: File '{txt_file_path}' not found.")
     sys.exit(1)
 
 # 2. Initialize Akamai Authentication Session
@@ -40,84 +39,91 @@ execution_log = {
     "results": []
 }
 
+# 3. Parse TXT and Deduplicate Upfront
+raw_stream_ids = []
+with open(txt_file_path, mode='r', encoding='utf-8') as txt_file:
+    for line in txt_file:
+        stream_id = line.strip()
+        # Skip empty lines or comments
+        if stream_id and not stream_id.startswith('#'):
+            raw_stream_ids.append(stream_id)
+
+# Deduplicate while preserving order using dict keys
+unique_stream_ids = list(dict.fromkeys(raw_stream_ids))
+total_streams = len(unique_stream_ids)
+
 print(f"\n🚀 Starting MSL4 Deletion Job (Account Switch Key: {account_switch_key})")
+print(f"📊 Parsed {len(raw_stream_ids)} lines. Found {total_streams} distinct stream(s) to process.")
 print("-" * 75)
-print(f"{'Stream ID':<15} | {'Contract':<15} | {'Status Code':<12} | {'Operation Status'}")
+print(f"{'Progress':<15} | {'Stream ID':<15} | {'Status Code':<12} | {'Operation Status'}")
 print("-" * 75)
 
-# 3. Parse CSV and execute deletions
-with open(csv_file_path, mode='r', encoding='utf-8') as csv_file:
-    reader = csv.DictReader(csv_file)
-    reader.fieldnames = [field.strip() for field in reader.fieldnames]
-
-    for row in reader:
-        stream_id = row.get("Stream ID", "").strip()
-        contract_id = (row.get("Contract") or row.get("Contract ID") or "").strip()
-        
-        if not stream_id or not contract_id:
-            continue
-        
-        endpoint_path = f"/config-media-live/v2/msl-origin/streams/{stream_id}"
-        full_url = urljoin(base_url, endpoint_path)
-        params = {"accountSwitchKey": account_switch_key}
-        
-        status_text = "Unknown"
-        response_body = ""
-        
-        # Infinite retry loop specifically for handling rate limiting (429)
-        while True:
+# 4. Execute deletions
+# Use enumerate to easily track the current index
+for index, stream_id in enumerate(unique_stream_ids, start=1):
+    progress_str = f"{index} out of {total_streams}:"
+    
+    endpoint_path = f"/config-media-live/v2/msl-origin/streams/{stream_id}"
+    full_url = urljoin(base_url, endpoint_path)
+    params = {"accountSwitchKey": account_switch_key}
+    
+    status_text = "Unknown"
+    response_body = ""
+    
+    # Infinite retry loop specifically for handling rate limiting (429)
+    while True:
+        try:
+            response = session.delete(full_url, params=params, timeout=30)
+            status_code = response.status_code
+            
             try:
-                response = session.delete(full_url, params=params, timeout=30)
-                status_code = response.status_code
+                response_body = response.json()
+            except ValueError:
+                response_body = response.text
+            
+            if status_code == 429:
+                print(f"⚠️ [429] Rate limit hit at stream {stream_id}. Cooling down for 60s...")
+                time.sleep(60)
+                continue 
+            
+            if status_code in [200, 204]:
+                status_text = "SUCCESS"
+            elif status_code == 400:
+                status_text = "BAD REQUEST (Stream might be active)"
+            elif status_code == 403:
+                status_text = "FORBIDDEN (Check permissions/switch key)"
+            elif status_code == 404:
+                status_text = "NOT FOUND"
+            else:
+                status_text = "FAILED"
+            
+            # Break out of the retry loop if it wasn't a 429
+            break
                 
-                try:
-                    response_body = response.json()
-                except ValueError:
-                    response_body = response.text
-                
-                if status_code == 429:
-                    # Print warning and sleep before retrying this exact same stream row
-                    print(f"⚠️ [429] Rate limit hit at stream {stream_id}. Cooling down for 30s...")
-                    time.sleep(30)
-                    continue 
-                
-                if status_code in [200, 204]:
-                    status_text = "SUCCESS"
-                elif status_code == 403:
-                    status_text = "FORBIDDEN (Check permissions/switch key)"
-                elif status_code == 404:
-                    status_text = "NOT FOUND"
-                else:
-                    status_text = "FAILED"
-                
-                # Break out of the retry loop if it wasn't a 429
-                break
-                    
-            except requests.exceptions.RequestException as req_err:
-                status_code = "ERROR"
-                status_text = f"Connection Exception: {str(req_err)}"
-                response_body = str(req_err)
-                break
+        except requests.exceptions.RequestException as req_err:
+            status_code = "ERROR"
+            status_text = f"Connection Exception: {str(req_err)}"
+            response_body = str(req_err)
+            break
 
-        # Print final status step to terminal
-        print(f"{stream_id:<15} | {contract_id:<15} | {status_code:<12} | {status_text}")
-        
-        # Save payload item to execution log array
-        execution_log["results"].append({
-            "stream_id": stream_id,
-            "contract_id": contract_id,
-            "status_code": status_code,
-            "status_text": status_text,
-            "api_endpoint": full_url,
-            "response_raw": response_body
-        })
-        
-        # Standard safety delay between clean requests
-        time.sleep(1)
+    # Print live status step to terminal
+    print(f"{progress_str:<15} | {stream_id:<15} | {status_code:<12} | {status_text}")
+    
+    # Save payload item to execution log array
+    execution_log["results"].append({
+        "stream_id": stream_id,
+        "status_code": status_code,
+        "status_text": status_text,
+        "api_endpoint": full_url,
+        "response_raw": response_body
+    })
+    
+    # Standard safety delay between clean requests
+    time.sleep(1)
 
 print("-" * 75)
 
-# 4. Save detailed log file 
+# 5. Save detailed log file 
 log_filename = f"akamai_msl_deletion_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 try:
     with open(log_filename, 'w', encoding='utf-8') as log_file:
