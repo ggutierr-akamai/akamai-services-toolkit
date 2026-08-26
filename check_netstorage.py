@@ -30,11 +30,18 @@ def main():
     )
     args = parser.parse_args()
 
-    # 1. Read input CP codes from the text file
+    # 1. Read input CP codes from file & remove duplicates (preserving order)
     try:
         with open(args.file, "r") as f:
-            # Strip whitespace and ignore empty lines
-            input_cpcodes = [line.strip() for line in f if line.strip()]
+            raw_cpcodes = [line.strip() for line in f if line.strip()]
+            
+        # Deduplicate while preserving order
+        input_cpcodes = list(dict.fromkeys(raw_cpcodes))
+        
+        raw_count = len(raw_cpcodes)
+        unique_count = len(input_cpcodes)
+        duplicates_removed = raw_count - unique_count
+
     except Exception as e:
         print(f"Error reading input file: {e}", file=sys.stderr)
         sys.exit(1)
@@ -42,6 +49,12 @@ def main():
     if not input_cpcodes:
         print("Input file is empty. Exiting.")
         sys.exit(0)
+
+    # Inform the user if duplicates were pruned
+    if duplicates_removed > 0:
+        print(f"Loaded {raw_count} total entries ({duplicates_removed} duplicate(s) removed).")
+    else:
+        print(f"Loaded {unique_count} unique CP code(s) from file.")
 
     # 2. Setup EdgeGrid Authentication
     try:
@@ -82,7 +95,7 @@ def main():
             
             data = response.json()
             
-            # The API returns a list of storage groups matching the filter.
+            # The API returns a list of storage groups matching the filter
             ns_exists = False
             
             if isinstance(data, list) and len(data) > 0:
