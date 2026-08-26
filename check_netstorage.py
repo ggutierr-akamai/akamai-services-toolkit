@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import sys
+import json
 import requests
 from akamai.edgegrid import EdgeGridAuth, EdgeRc
 
@@ -30,10 +31,15 @@ def main():
     )
     args = parser.parse_args()
 
-    # 1. Read input CP codes from file & remove duplicates (preserving order)
+    # 1. Read input CP codes, sanitize to digits only, & remove duplicates
     try:
+        raw_cpcodes = []
         with open(args.file, "r") as f:
-            raw_cpcodes = [line.strip() for line in f if line.strip()]
+            for line in f:
+                # Remove whitespace, non-breaking spaces, and strip non-numeric characters
+                cleaned_line = "".join(filter(str.isdigit, line))
+                if cleaned_line:
+                    raw_cpcodes.append(cleaned_line)
             
         # Deduplicate while preserving order
         input_cpcodes = list(dict.fromkeys(raw_cpcodes))
@@ -47,10 +53,10 @@ def main():
         sys.exit(1)
 
     if not input_cpcodes:
-        print("Input file is empty. Exiting.")
+        print("Input file is empty or contains no valid numeric CP codes. Exiting.")
         sys.exit(0)
 
-    # Inform the user if duplicates were pruned
+    # Inform the user about loaded/sanitized entries
     if duplicates_removed > 0:
         print(f"Loaded {raw_count} total entries ({duplicates_removed} duplicate(s) removed).")
     else:
@@ -69,7 +75,7 @@ def main():
     print(f"Checking NetStorage Configuration API (Account Switch Key: {args.switch_key})...")
     print("\n--- RESULTS ---")
     print(f"{'CP CODE':<15} | {'NETSTORAGE STATUS'}")
-    print("-" * 40)
+    print("-" * 45)
 
     # Initialize counters for the summary
     total_checked = len(input_cpcodes)
@@ -81,11 +87,8 @@ def main():
     endpoint = f"{base_url}/storage/v1/storage-groups"
 
     for cpcode in input_cpcodes:
-        # Clean up any potential 'cpc_' prefixes just in case
-        clean_cpcode = cpcode.replace("cpc_", "")
-        
         params = {
-            "cpcodeId": clean_cpcode,
+            "cpcodeId": cpcode,
             "accountSwitchKey": args.switch_key
         }
 
@@ -101,7 +104,6 @@ def main():
             if isinstance(data, list) and len(data) > 0:
                 ns_exists = True
             elif isinstance(data, dict):
-                # Fallback in case the array is wrapped in an object
                 for key, value in data.items():
                     if isinstance(value, list) and len(value) > 0:
                         ns_exists = True
@@ -119,7 +121,15 @@ def main():
                 print(f"{cpcode:<15} | ❌ NO NETSTORAGE (or no API access)")
                 total_not_found += 1
             else:
-                print(f"{cpcode:<15} | ⚠️ HTTP ERROR: {response.status_code}")
+                # Extract Akamai's detailed error message if available
+                error_detail = ""
+                try:
+                    err_json = response.json()
+                    error_detail = err_json.get("detail") or err_json.get("title") or response.text
+                except Exception:
+                    error_detail = response.text.strip()
+                
+                print(f"{cpcode:<15} | ⚠️ HTTP ERROR {response.status_code}: {error_detail}")
                 total_errors += 1
         except Exception as err:
              print(f"{cpcode:<15} | ⚠️ ERROR: {err}")
